@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fun Time</title>
+    <!-- Load Tailwind CSS for utility styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Use Inter font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0c1015;
+        }
+        /* Custom scrollbar for chat */
+        #chat-messages::-webkit-scrollbar {
+            width: 8px;
+        }
+        #chat-messages::-webkit-scrollbar-thumb {
+            background-color: #38bdf8;
+            border-radius: 4px;
+        }
+        #chat-messages::-webkit-scrollbar-track {
+            background: #161b22;
+        }
+        /* Custom style for movie card image placeholder */
+        .movie-card-poster {
+            background-size: cover;
+            background-position: center;
+        }
+        /* Custom scrollbar for horizontal movie rows */
+        .movie-scroll-container::-webkit-scrollbar {
+            height: 8px;
+        }
+        .movie-scroll-container::-webkit-scrollbar-thumb {
+            background-color: #3b82f6; /* Blue-500 */
+            border-radius: 4px;
+        }
+        .movie-scroll-container::-webkit-scrollbar-track {
+            background: #161b22;
+        }
+        /* Player container for responsive aspect ratio */
+        .player-wrapper {
+            position: relative;
+            width: 100%;
+            padding-top: 56.25%; /* 16:9 Aspect Ratio */
+            border-radius: 0.75rem; /* rounded-xl */
+            overflow: hidden;
+            background-color: #1e293b; /* Dark background for video area */
+        }
+        .player-wrapper video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* Object-fit is key for responsive video */
+            object-fit: contain; 
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="min-h-screen flex flex-col">
+        <!-- Header: Name on left, Auth/Admin/Sign Out controls on right -->
+        <header class="bg-gray-900 shadow-xl p-4 flex justify-between items-center sticky top-0 z-10 border-b border-sky-900/50">
+            <!-- App Name: ONLY Fun Time -->
+            <h1 class="text-3xl font-extrabold text-sky-400">
+                🎉 Fun Time
+            </h1>
+            <!-- Auth Info & Controls -->
+            <div id="header-controls" class="flex items-center space-x-4">
+                <!-- Buttons rendered by JS based on auth state -->
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <main id="main-content" class="flex-grow p-4 md:p-8">
+            <!-- This will be populated by the JS based on login state -->
+        </main>
+
+        <!-- Notification/Toast Area -->
+        <div id="notification-container" class="fixed bottom-4 right-4 z-50 space-y-2">
+            <!-- Notifications will appear here -->
+        </div>
+
+        <!-- Admin Login Modal -->
+        <div id="admin-login-modal" class="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center hidden">
+            <div class="bg-gray-900 p-8 rounded-2xl shadow-3xl w-full max-w-md border border-yellow-800/50">
+                <h3 class="text-2xl font-bold text-yellow-400 mb-6">Administrator Login</h3>
+                <form id="admin-login-form" class="space-y-4">
+                    <input type="text" id="admin-username" placeholder="Username (shivansh)" class="w-full p-4 bg-gray-800 text-white rounded-xl border border-gray-700 focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500" required>
+                    <input type="password" id="admin-password" placeholder="Password (gtrxgtr)" class="w-full p-4 bg-gray-800 text-white rounded-xl border border-gray-700 focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500" required>
+                    <button type="submit" class="w-full py-3 bg-yellow-600 text-gray-900 font-bold rounded-xl shadow-lg hover:bg-yellow-500 transition duration-300">
+                        Login as Admin
+                    </button>
+                    <button type="button" onclick="document.getElementById('admin-login-modal').classList.add('hidden')" class="mt-2 w-full py-2 text-gray-400 hover:text-white transition">
+                        Cancel
+                    </button>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Firebase and API Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, query, addDoc, setDoc, serverTimestamp, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- GLOBAL SETUP ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // --- ADMIN SECRETS ---
+        const ADMIN_USERNAME = "shivansh"; // New required username
+        const ADMIN_PASSWORD = "gtrxgtr"; // New required password
+        
+        // --- MOCK METRICS FOR ADMIN DASHBOARD ---
+        const TOTAL_MOCK_MOVIES = 12000;
+        const TOTAL_MOCK_VIDEOS = 5000;
+
+        // --- API & SECRETS SETUP ---
+        const GOT_QUOTES_LIST_URL = "https://api.gameofthronesquotes.xyz/v1/random/5";
+        const SINGLE_GOT_QUOTE_URL = "https://api.gameofthronesquotes.xyz/v1/random";
+
+        let app, db, auth;
+        let userId = null;
+        let isAdmin = false;
+        let onlineUserCount = 0;
+        let onlineUsersList = []; 
+        let currentPage = 'party'; // 'party', 'explore', 'history'
+        let videoElement = null; // Global HTML <video> element instance
+
+        // Firestore Paths (Mandatory structure)
+        const PUBLIC_CHAT_PATH = `artifacts/${appId}/public/data/chat_messages`;
+        const PUBLIC_USERS_PATH = `artifacts/${appId}/public/data/online_users`;
+        const PRIVATE_HISTORY_PATH = (uid) => `artifacts/${appId}/users/${uid}/watch_history`;
+
+        // Global State for current content being watched
+        let currentPartyContent = {
+            title: "Select a Movie to Start Your Party",
+            posterPath: 'https://placehold.co/400x600/1e293b/a8a8a8?text=WATCH+NOW',
+            type: 'Placeholder',
+            id: null,
+            videoUrl: null 
+        };
+
+        // --- MOCK MOVIE DATA ---
+        const MOCK_MP4_URL = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"; 
+        
+        const MOCK_MOVIES = [
+            { id: 101, title: "The Cosmic Voyager", year: 2024, rating: 8.9, genre: "Sci-Fi", posterUrl: "https://placehold.co/300x450/111827/facc15?text=Cosmic+Voyager", overview: "A deep space mission discovers a new dimension.", videoUrl: MOCK_MP4_URL }, 
+            { id: 102, title: "Shadows of the Past", year: 2023, rating: 7.5, genre: "Thriller", posterUrl: "https://placehold.co/300x450/252f40/9ca3af?text=Shadows", overview: "An old secret threatens a politician's new life.", videoUrl: MOCK_MP4_URL }, 
+            { id: 103, title: "Laugh Riot: The Sequel", year: 2025, rating: 9.1, genre: "Comedy", posterUrl: "https://placehold.co/300x450/4ade80/000000?text=Laugh+Riot", overview: "More laughs, more chaos, same great cast.", videoUrl: MOCK_MP4_URL }, 
+            { id: 104, title: "Ancient Secrets of the Maya", year: 2022, rating: 6.8, genre: "Adventure", posterUrl: "https://placehold.co/300x450/d946ef/fef08a?text=Ancient+Secrets", overview: "Unraveling a thousand-year-old jungle mystery.", videoUrl: MOCK_MP4_URL }, 
+            { id: 105, title: "The Last Pixel Warrior", year: 2210, rating: 9.5, genre: "Action", posterUrl: "https://placehold.co/300x450/fbbf24/1f2937?text=Last+Warrior", overview: "A virtual hero must save the real world.", videoUrl: MOCK_MP4_URL }, 
+            { id: 106, title: "Ocean's Whisper", year: 2024, rating: 7.2, genre: "Drama", posterUrl: "https://placehold.co/300x450/3b82f6/eff6ff?text=Ocean's+Whisper", overview: "A moving story about a fisherman and his family.", videoUrl: MOCK_MP4_URL }, 
+            { id: 107, title: "Desert Storm 2", year: 2021, rating: 8.0, genre: "War", posterUrl: "https://placehold.co/300x450/b91c1c/fef2f2?text=Desert+Storm", overview: "The thrilling second installment of the military saga.", videoUrl: MOCK_MP4_URL }, 
+            { id: 108, title: "Virtual Reality: Glitch", year: 2020, rating: 7.9, genre: "Sci-Fi", posterUrl: "https://placehold.co/300x450/8b5cf6/ffffff?text=VR+Glitch", overview: "A coder gets trapped inside his own simulation.", videoUrl: MOCK_MP4_URL }, 
+            { id: 109, title: "Midnight Feast", year: 2023, rating: 8.3, genre: "Horror", posterUrl: "https://placehold.co/300x450/000000/eab308?text=Midnight+Feast", overview: "Dinner is served... but who is the main course?", videoUrl: MOCK_MP4_URL }, 
+            { id: 110, title: "The Inventor's Paradox", year: 2025, rating: 9.0, genre: "Biography", posterUrl: "https://placehold.co/300x450/65a30d/f0fdf4?text=The+Inventor", overview: "The life and strange times of a forgotten genius.", videoUrl: MOCK_MP4_URL }, 
+            { id: 111, title: "Star Dust", year: 2024, rating: 7.8, genre: "Fantasy", posterUrl: "https://placehold.co/300x450/4f46e5/d1d5db?text=Star+Dust", overview: "A magical quest across a crumbling kingdom.", videoUrl: MOCK_MP4_URL }, 
+            { id: 112, title: "The Timekeeper", year: 2023, rating: 8.5, genre: "Mystery", posterUrl: "https://placehold.co/300x450/e11d48/fce7f3?text=Timekeeper", overview: "Solving murders with a watch that can rewind minutes.", videoUrl: MOCK_MP4_URL }, 
+            { id: 113, title: "Escape from L.A.", year: 1996, rating: 7.0, genre: "Action", posterUrl: "https://placehold.co/300x450/374151/fca5a5?text=Escape+LA", overview: "Snake Plissken returns to action.", videoUrl: MOCK_MP4_URL }, 
+            { id: 114, title: "Dinosaur Planet", year: 2000, rating: 8.2, genre: "Adventure", posterUrl: "https://placehold.co/300x450/065f46/d1fae5?text=Dino+Planet", overview: "Humans crash-land on a planet ruled by dinosaurs.", videoUrl: MOCK_MP4_URL }, 
+        ];
+        
+        // Helper to get unique genres for the filter dropdown
+        const UNIQUE_GENRES = [...new Set(MOCK_MOVIES.map(m => m.genre))].sort();
+
+        // --- VIDEO PLAYER INTEGRATION ---
+        
+        /** Initializes the actual HTML <video> element */
+        function initializePlayer(videoUrl) {
+            videoElement = document.getElementById('main-video-player');
+            if (videoElement) {
+                // Remove old listeners to prevent multiple firings
+                videoElement.onerror = null; 
+                videoElement.onloadeddata = null; 
+                
+                // 1. Set the source and explicitly load the media
+                videoElement.src = videoUrl;
+                videoElement.load(); 
+
+                // 2. Listen for errors related to the source/format
+                videoElement.onerror = (e) => {
+                    console.error("Video Playback Error:", videoElement.error);
+                    // Check if the error is due to an unsupported source
+                    if (videoElement.error && videoElement.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+                        showNotification("Video failed to load: Source not supported or unreachable. Please check the video URL.", true);
+                    } else {
+                        showNotification("Video failed to play. See console for details.", true);
+                    }
+                };
+
+                // 3. Only attempt to play once the necessary data has loaded
+                videoElement.onloadeddata = () => {
+                    videoElement.play().catch(e => {
+                        // Ignore Autoplay errors (expected if user hasn't interacted)
+                        if (e.name !== "NotAllowedError" && e.name !== "AbortError") {
+                            console.warn("Autoplay prevented or playback error:", e);
+                            showNotification("Video is loaded but cannot autoplay. Click the video player to start.", false);
+                        }
+                    });
+                };
+                
+            } else {
+                console.error("Video player element not found.");
+            }
+        }
+        
+        /** Mock function for controlling the video (can be expanded for synchronization) */
+        function togglePlayerSync() {
+            if (!videoElement) {
+                showNotification("No content is loaded to sync.", true);
+                return;
+            }
+
+            if (videoElement.paused) {
+                videoElement.play();
+                showNotification("Video is now playing (Local Only)", false);
+            } else {
+                videoElement.pause();
+                showNotification("Video is now paused (Local Only)", false);
+            }
+        }
+
+        // --- UTILITY FUNCTIONS ---
+        
+        /** Groups a flat array of movies into an object keyed by genre */
+        const groupMoviesByGenre = (movies) => {
+            return movies.reduce((acc, movie) => {
+                const genre = movie.genre || 'Uncategorized';
+                if (!acc[genre]) {
+                    acc[genre] = [];
+                }
+                acc[genre].push(movie);
+                return acc;
+            }, {});
+        };
+
+        /** Shows a temporary notification/toast */
+        function showNotification(message, isError = false) {
+            const container = document.getElementById('notification-container');
+            const color = isError ? 'bg-red-600' : 'bg-green-600';
+
+            const notification = document.createElement('div');
+            notification.className = `p-3 rounded-xl shadow-2xl text-white font-medium ${color} transition-opacity duration-500`;
+            notification.textContent = message;
+
+            container.appendChild(notification);
+
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                notification.addEventListener('transitionend', () => notification.remove());
+            }, 3000);
+        }
+
+        /** Clears the main content area */
+        function clearMainContent() {
+            document.getElementById('main-content').innerHTML = '';
+        }
+
+        /** Handles Sign Out Logic */
+        async function handleSignOut() {
+            try {
+                // Remove user presence on sign out
+                if (userId && db) {
+                     await deleteDoc(doc(db, PUBLIC_USERS_PATH, userId));
+                }
+                // Stop and reset video element
+                if (videoElement) {
+                    videoElement.pause();
+                    videoElement.src = "";
+                    videoElement.load();
+                    videoElement = null;
+                }
+                await signOut(auth);
+                localStorage.removeItem('watchparty_is_admin');
+                isAdmin = false;
+                userId = null;
+                showNotification("You have been signed out.", false);
+            } catch (error) {
+                console.error("Error signing out:", error);
+                showNotification("Sign out failed. See console for details.", true);
+            }
+        }
+        
+        /** Switches the current view (Party, Explore, History) */
+        function setPage(pageName) {
+            currentPage = pageName;
+            // Re-render the main view to apply the change
+            if (userId && auth.currentUser) {
+                renderWatchPartyView(auth.currentUser);
+            }
+        }
+        
+        // --- DATA INTERACTION (FIRESTORE) ---
+        
+        /** Updates the Firestore presence document for the user */
+        async function updateUserPresence(isOnline) {
+            if (!db || !userId) return;
+            const userRef = doc(db, PUBLIC_USERS_PATH, userId);
+            
+            if (isOnline) {
+                const presenceData = {
+                    uid: userId,
+                    status: 'online',
+                    last_seen: serverTimestamp(),
+                    isAdmin: isAdmin,
+                    username: isAdmin ? ADMIN_USERNAME : `Guest-${userId.substring(0, 4)}` 
+                };
+                await setDoc(userRef, presenceData);
+                // Listen for browser window close/unload to delete presence
+                window.onbeforeunload = async () => {
+                    await deleteDoc(userRef);
+                };
+            } else {
+                await deleteDoc(userRef);
+            }
+        }
+
+        /** Sets up real-time listener for the count and list of online users */
+        function setupUserPresenceListener() {
+            if (!db) return;
+            const usersCollection = collection(db, PUBLIC_USERS_PATH);
+            
+            onSnapshot(usersCollection, (snapshot) => {
+                onlineUsersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                onlineUserCount = onlineUsersList.length;
+                
+                // Update Admin Panel Counts and List
+                const adminCountEl = document.getElementById('admin-user-count');
+                if (adminCountEl) {
+                    adminCountEl.textContent = onlineUserCount;
+                }
+                
+                // Update general online count
+                const onlineCountEl = document.getElementById('online-users-count-display');
+                if (onlineCountEl) {
+                    onlineCountEl.textContent = onlineUserCount;
+                }
+
+                // Update the user list display
+                if (isAdmin) {
+                    renderAdminUserList();
+                }
+                
+            }, (error) => {
+                console.error("Error listening to user presence:", error);
+            });
+        }
+        
+        /** Renders the list of active users in the admin panel */
+        function renderAdminUserList() {
+            const userListEl = document.getElementById('active-user-list');
+            if (!userListEl) return;
+
+            userListEl.innerHTML = onlineUsersList.length > 0
+                ? onlineUsersList.map(user => `
+                    <li class="p-2 bg-gray-700 rounded-lg flex justify-between items-center text-sm">
+                        <span class="font-semibold ${user.isAdmin ? 'text-yellow-400' : 'text-sky-300'}">${user.username} ${user.isAdmin ? '(Admin)' : ''}</span>
+                        <span class="text-xs text-gray-400 break-all ml-2">ID: ${user.uid}</span>
+                    </li>
+                `).join('')
+                : '<li class="text-gray-500 italic">No other users online.</li>';
+        }
+
+
+        /** Sends a new chat message to Firestore */
+        async function sendChatMessage(message) {
+            if (!db || !userId) {
+                showNotification("You must be logged in to chat.", true);
+                return;
+            }
+            try {
+                await addDoc(collection(db, PUBLIC_CHAT_PATH), {
+                    userId: userId,
+                    message: message,
+                    timestamp: serverTimestamp(),
+                    username: isAdmin ? ADMIN_USERNAME : `Guest-${userId.substring(0, 4)}`
+                });
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                showNotification("Failed to send message.", true);
+            }
+        }
+
+        /** Sets up real-time listener for chat messages */
+        function setupChatListener() {
+            if (!db) return;
+            const q = collection(db, PUBLIC_CHAT_PATH); 
+            
+            onSnapshot(q, (snapshot) => {
+                let messages = [];
+                snapshot.forEach((doc) => {
+                    messages.push({ id: doc.id, ...doc.data() });
+                });
+                
+                // Sort messages locally by timestamp, descending (most recent last)
+                messages.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0));
+
+                renderChatMessages(messages);
+            }, (error) => {
+                console.error("Error listening to chat:", error);
+            });
+        }
+        
+        /** Renders the real-time chat messages */
+        function renderChatMessages(messages) {
+            const messagesContainer = document.getElementById('chat-messages');
+            if (!messagesContainer) return;
+            
+            messagesContainer.innerHTML = ''; // Clear existing messages
+
+            messages.forEach(msg => {
+                const isMyMessage = msg.userId === userId;
+                const messageDiv = document.createElement('div');
+                
+                // Determine styling and alignment
+                messageDiv.className = `flex flex-col ${isMyMessage ? 'items-end' : 'items-start'}`;
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'text-xs font-semibold';
+                
+                const usernameDisplay = msg.username || `User-${msg.userId.substring(0, 4)}`;
+                nameSpan.textContent = isMyMessage ? `You (${usernameDisplay}):` : `${usernameDisplay}:`;
+                nameSpan.classList.add(isMyMessage ? 'text-green-400' : 'text-sky-400');
+
+                const contentSpan = document.createElement('span');
+                contentSpan.className = `p-2 rounded-lg max-w-xs shadow-inner text-white`;
+                contentSpan.classList.add(isMyMessage ? 'bg-green-700' : 'bg-gray-700');
+                contentSpan.textContent = msg.message;
+
+                messageDiv.appendChild(nameSpan);
+                messageDiv.appendChild(contentSpan);
+                messagesContainer.appendChild(messageDiv);
+            });
+
+            // Scroll to the bottom
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+
+        // --- CONTENT & ADMIN FUNCTIONS ---
+
+        /** Logs content selection to private history */
+        async function logWatchHistory(content) {
+            if (!db || !userId || content.type === 'Placeholder') return;
+            try {
+                await addDoc(collection(db, PRIVATE_HISTORY_PATH(userId)), {
+                    title: content.title,
+                    type: content.type,
+                    id: content.id,
+                    watched_at: serverTimestamp()
+                });
+            } catch (e) {
+                console.error("Failed to log history: ", e);
+            }
+        }
+        
+        /** * Handles content selection by the Admin. */
+        function handleMovieSelection(e) {
+            if (!isAdmin) {
+                showNotification("Only the administrator can select the content for the party.", true);
+                return;
+            }
+
+            const button = e.currentTarget;
+            const title = button.dataset.title;
+            const poster = button.dataset.poster; 
+            const id = button.dataset.movieId;
+            const videoUrl = button.dataset.videoUrl; // Changed to videoUrl
+
+            currentPartyContent = {
+                title: title,
+                posterPath: poster,
+                type: 'Movie',
+                id: id,
+                videoUrl: videoUrl
+            };
+
+            // Log selection to history
+            logWatchHistory(currentPartyContent);
+            
+            // 1. Update the player UI immediately
+            updatePlayerUI();
+            
+            // 2. Show success message and switch to the Party page to view the content
+            showNotification(`Selected and playing: ${title} in the Fun Time stream!`, false);
+            setPage('party'); // Switches view to 'party'
+        }
+
+        /** Updates the player section dynamically based on currentPartyContent state */
+        function updatePlayerUI() {
+            const playerArea = document.getElementById('player-area');
+            if (!playerArea) return;
+
+            // Determine if content is ready to play
+            const isVideoReady = !!currentPartyContent.videoUrl;
+
+            if (isVideoReady) {
+                 // Load the HTML <video> player container
+                playerArea.innerHTML = `
+                    <div class="player-wrapper shadow-2xl">
+                        <!-- main-video-player is the ID the JS will target -->
+                        <video id="main-video-player" controls preload="auto" poster="${currentPartyContent.posterPath}">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="absolute top-8 right-8 text-white bg-black/70 px-3 py-1 rounded-full text-sm font-medium">
+                        Playing: ${currentPartyContent.title}
+                    </div>
+                    <div class="flex justify-center mt-4">
+                        <button onclick="togglePlayerSync()" class="px-6 py-2 bg-pink-600 text-white font-bold rounded-full hover:bg-pink-700 transition duration-300 shadow-lg">
+                            ⏯️ Start/Pause Sync (Local)
+                        </button>
+                    </div>
+                `;
+                
+                // Initialize the player (load the source and attempt to play)
+                initializePlayer(currentPartyContent.videoUrl);
+
+            } else {
+                // Placeholder UI if no content is selected (or videoUrl is missing)
+                const posterPath = currentPartyContent.posterPath; 
+
+                playerArea.innerHTML = `
+                    <div class="aspect-video bg-gray-800 flex items-center justify-center rounded-xl shadow-inner relative">
+                        <img src="${posterPath}" 
+                             onerror="this.onerror=null;this.src='https://placehold.co/1600x900/1e293b/a8a8a8?text=${currentPartyContent.title}';" 
+                             alt="${currentPartyContent.title}" 
+                             class="w-full h-full object-cover opacity-30 rounded-xl">
+                        <div class="absolute inset-0 flex flex-col items-center justify-center text-center p-4">
+                            <h3 class="text-3xl font-extrabold text-white mb-2">${currentPartyContent.title}</h3>
+                            <p class="text-sky-300 mt-2 text-lg">Type: ${currentPartyContent.type} | Select a movie in Explore to start!</p>
+                            <div class="mt-6">
+                                <button onclick="setPage('explore')" class="px-8 py-3 bg-sky-600 text-white font-extrabold rounded-full hover:bg-sky-700 transition duration-300 shadow-lg">
+                                    ▶️ Explore Movies
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        // --- API FUNCTIONS ---
+
+        /** Fetches movies from the MOCK data, filtered by query and genre */
+        async function fetchMovies(query = null, genre = null) { // Added genre parameter
+            // Simulate network delay
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            let filteredMovies = MOCK_MOVIES;
+
+            // 1. Filter by Genre first
+            if (genre) {
+                filteredMovies = filteredMovies.filter(movie => movie.genre === genre);
+            }
+            
+            // 2. Filter by Query second (on title/overview)
+            if (query) {
+                const lowerCaseQuery = query.toLowerCase();
+                filteredMovies = filteredMovies.filter(movie => 
+                    movie.title.toLowerCase().includes(lowerCaseQuery) ||
+                    movie.overview.toLowerCase().includes(lowerCaseQuery)
+                );
+            }
+            
+            return filteredMovies;
+        }
+        
+        /** Fetches a list of 5 random Game of Thrones quotes */
+        async function fetchGoTQuoteList() {
+            try {
+                const response = await fetch(GOT_QUOTES_LIST_URL);
+                if (!response.ok) throw new Error(`HTTP status: ${response.status}`);
+                return await response.json();
+            } catch (error) {
+                console.error("Error fetching GoT quote list:", error);
+                return [];
+            }
+        }
+        
+        /** Fetches a single random Game of Thrones quote */
+        async function fetchSingleGoTQuote() {
+            try {
+                const response = await fetch(SINGLE_GOT_QUOTE_URL);
+                if (!response.ok) throw new Error(`HTTP status: ${response.status}`);
+                const data = await response.json();
+                return data[0] || null; 
+            } catch (error) {
+                console.error("Error fetching single GoT quote:", error);
+                return null;
+            }
+        }
+
+
+        // --- RENDER FUNCTIONS ---
+        
+        /** Renders the Header controls based on auth state */
+        function renderHeaderControls() {
+            const controlsEl = document.getElementById('header-controls');
+            if (!controlsEl) return;
+            
+            controlsEl.innerHTML = '';
+            
+            if (userId) {
+                // Logged In (Guest or Admin)
+                const statusSpan = document.createElement('span');
+                statusSpan.id = 'user-info';
+                statusSpan.className = 'text-gray-400 text-sm font-medium';
+                statusSpan.textContent = `Status: ${isAdmin ? 'ADMIN' : 'GUEST'}`;
+                controlsEl.appendChild(statusSpan);
+
+                if (isAdmin) {
+                    // Admin Logged In
+                    const adminButton = document.createElement('button');
+                    adminButton.className = 'px-4 py-2 bg-yellow-600 text-gray-900 font-semibold rounded-full hover:bg-yellow-500 transition duration-300 shadow-md';
+                    adminButton.textContent = 'Admin Panel';
+                    adminButton.onclick = () => { setPage('party'); /* Admin Panel is in Party View */ };
+                    controlsEl.appendChild(adminButton);
+                } else {
+                    // Guest Logged In (Show Admin Login option)
+                    const adminLoginButton = document.createElement('button');
+                    adminLoginButton.className = 'px-4 py-2 bg-yellow-600 text-gray-900 font-semibold rounded-full hover:bg-yellow-500 transition duration-300 shadow-md';
+                    adminLoginButton.textContent = 'Admin Login';
+                    adminLoginButton.onclick = () => document.getElementById('admin-login-modal').classList.remove('hidden');
+                    controlsEl.appendChild(adminLoginButton);
+                }
+
+                // Sign Out Button (Always visible when logged in)
+                const signOutButton = document.createElement('button');
+                signOutButton.className = 'px-4 py-2 bg-red-600 text-white font-semibold rounded-full hover:bg-red-700 transition duration-300 shadow-md';
+                signOutButton.textContent = 'Sign Out';
+                signOutButton.onclick = handleSignOut;
+                controlsEl.appendChild(signOutButton);
+
+            } else {
+                // Logged Out
+                const signInButton = document.createElement('button');
+                signInButton.className = 'px-4 py-2 bg-sky-600 text-white font-semibold rounded-full hover:bg-sky-700 transition duration-300 shadow-md';
+                signInButton.textContent = 'Sign In';
+                signInButton.onclick = () => initializeAuth(false); // Guest login is default
+                controlsEl.appendChild(signInButton);
+
+                const adminLoginButton = document.createElement('button');
+                adminLoginButton.className = 'px-4 py-2 bg-yellow-600 text-gray-900 font-semibold rounded-full hover:bg-yellow-500 transition duration-300 shadow-md';
+                adminLoginButton.textContent = 'Admin Login';
+                adminLoginButton.onclick = () => document.getElementById('admin-login-modal').classList.remove('hidden');
+                controlsEl.appendChild(adminLoginButton);
+            }
+        }
+        
+        /** Renders a single movie card */
+        function renderMovieCard(movie) {
+            const posterPath = movie.posterUrl || 'https://placehold.co/300x450/1e293b/a8a8a8?text=No+Poster';
+            
+            // Added flex-shrink-0 and w-44 for horizontal scrolling
+            return `
+                <div class="flex-shrink-0 w-44 bg-gray-800 rounded-xl overflow-hidden shadow-2xl cursor-pointer hover:shadow-sky-500/50 transition duration-300 transform hover:scale-105 relative group">
+                    <div class="w-full h-64 movie-card-poster" style="background-image: url('${posterPath}');">
+                        <!-- Poster is a background image for responsive display -->
+                    </div>
+                    
+                    <div class="p-3">
+                        <h5 class="text-base font-bold text-white truncate" title="${movie.title}">${movie.title}</h5>
+                        <p class="text-xs text-gray-400 mt-1 flex justify-between">
+                            <span>${movie.year} | ${movie.genre}</span>
+                            <span class="font-bold text-yellow-400">${movie.rating.toFixed(1)}/10</span>
+                        </p>
+                    </div>
+                    
+                    <!-- Admin Selection Overlay (Only shown if admin is logged in) -->
+                    ${isAdmin ? `
+                        <div class="absolute inset-0 bg-black bg-opacity-70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                            <button class="select-movie-btn px-4 py-2 bg-sky-600 text-white font-bold rounded-full hover:bg-sky-700 text-sm shadow-xl"
+                                data-movie-id="${movie.id}"
+                                data-title="${movie.title.replace(/'/g, '&#39;')}"
+                                data-poster="${posterPath}"
+                                data-video-url="${movie.videoUrl}"
+                            >Select for Party</button>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+        
+        /** Renders the History Page content (unchanged) */
+        async function renderHistoryView() {
+            let historyHTML = `
+                <h2 class="text-3xl font-extrabold text-white mb-6">🕒 Your Watch History</h2>
+                <div id="history-list" class="space-y-4">
+                    <p class="text-gray-400">Loading history...</p>
+                </div>
+            `;
+            document.getElementById('content-area').innerHTML = historyHTML;
+
+            try {
+                const historyCollectionRef = collection(db, PRIVATE_HISTORY_PATH(userId));
+                const snapshot = await getDocs(historyCollectionRef);
+                
+                let historyItems = [];
+                snapshot.forEach(doc => {
+                    historyItems.push({ id: doc.id, ...doc.data() });
+                });
+
+                historyItems.sort((a, b) => (b.watched_at?.seconds || 0) - (a.watched_at?.seconds || 0));
+
+                const historyListEl = document.getElementById('history-list');
+                historyListEl.innerHTML = ''; 
+
+                if (historyItems.length === 0) {
+                    historyListEl.innerHTML = '<p class="text-gray-500 italic">You haven\'t watched anything yet!</p>';
+                    return;
+                }
+
+                historyItems.forEach(item => {
+                    const date = item.watched_at?.toDate() ? item.watched_at.toDate().toLocaleString() : 'Unknown Time';
+                    historyListEl.innerHTML += `
+                        <div class="bg-gray-800 p-4 rounded-xl flex justify-between items-center border border-gray-700">
+                            <div>
+                                <h4 class="text-xl font-bold text-sky-400">${item.title}</h4>
+                                <p class="text-sm text-gray-400">Type: ${item.type} | ID: ${item.id}</p>
+                            </div>
+                            <span class="text-sm text-gray-500">${date}</span>
+                        </div>
+                    `;
+                });
+            } catch (error) {
+                console.error("Failed to load watch history:", error);
+                document.getElementById('history-list').innerHTML = '<p class="text-red-400">Failed to load history due to an error.</p>';
+            }
+        }
+        
+        /** Renders the Explore Page content (Search and Quotes) */
+        async function renderExploreView() {
+            // Initial render state
+            let exploreHTML = `
+                <h2 class="text-3xl font-extrabold text-white mb-6">🔍 Explore Content & Wisdom</h2>
+                
+                <!-- Single Prominent Game of Thrones Quote -->
+                <div id="single-quote-display" class="mb-10 p-8 bg-gray-900 rounded-2xl border border-red-700/50 shadow-2xl">
+                    <h3 class="text-2xl font-bold text-red-400 mb-4">A Word of Wisdom</h3>
+                    <p class="text-gray-500">Loading a quote from Westeros...</p>
+                </div>
+
+                <!-- Search Bar with NEW Genre Filter -->
+                <div class="mb-8 p-6 bg-gray-900 rounded-2xl border border-gray-700">
+                    <form id="movie-search-form" class="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
+                        <input type="text" id="search-input" placeholder="Search for any movie title..." class="flex-grow p-3 bg-gray-800 text-white rounded-xl border border-gray-700 focus:border-sky-500">
+                        <select id="genre-filter" class="p-3 bg-gray-800 text-white rounded-xl border border-gray-700 focus:border-sky-500 w-full sm:w-1/4">
+                            <!-- Options populated by JS -->
+                        </select>
+                        <button type="submit" class="px-6 py-3 bg-sky-600 text-white font-bold rounded-xl hover:bg-sky-700 transition duration-300 w-full sm:w-auto">Search / Filter</button>
+                    </form>
+                </div>
+
+                <!-- Recommended Movies/Search Results - NEW STRUCTURE -->
+                <h3 id="explore-heading" class="text-3xl font-bold text-white mb-6"></h3>
+                <div id="explore-movie-list-container" class="mt-8">
+                    <p class="text-white text-center col-span-full py-8">Loading movies...</p>
+                </div>
+                
+                <!-- Game of Thrones Quotes List -->
+                <div class="bg-gray-900 rounded-2xl shadow-3xl p-6 border border-red-900/40 mt-10">
+                    <h3 class="text-2xl font-extrabold text-red-400 mb-6">⚔️ More Wisdom from Westeros</h3>
+                    <div id="quotes-list-container" class="space-y-4">
+                        <p class="text-gray-500">Loading quotes list...</p>
+                    </div>
+                </div>
+            `;
+            document.getElementById('content-area').innerHTML = exploreHTML;
+            
+            // 1. Populate Genre Filter
+            const genreFilterEl = document.getElementById('genre-filter');
+            if (genreFilterEl) {
+                // Add default "All Genres" option
+                genreFilterEl.innerHTML = '<option value="">All Genres</option>'; 
+                UNIQUE_GENRES.forEach(genre => {
+                    const option = document.createElement('option');
+                    option.value = genre;
+                    option.textContent = genre;
+                    genreFilterEl.appendChild(option);
+                });
+            }
+
+            // --- Load Asynchronous Data ---
+            const [movies, quotesList, singleQuote] = await Promise.all([
+                fetchMovies(),
+                fetchGoTQuoteList(),
+                fetchSingleGoTQuote()
+            ]);
+            
+            // 2. Render Single Quote
+            const singleQuoteEl = document.getElementById('single-quote-display');
+            if (singleQuoteEl) {
+                singleQuoteEl.innerHTML = `
+                    <h3 class="text-2xl font-bold text-red-400 mb-4">A Word of Wisdom</h3>
+                    ${singleQuote ? `
+                        <blockquote class="text-3xl font-serif italic text-white leading-relaxed">
+                            "${singleQuote.sentence}"
+                        </blockquote>
+                        <footer class="text-lg font-semibold text-red-300 mt-4">— ${singleQuote.character.name}</footer>
+                    ` : '<p class="text-gray-500">Failed to load quote from Westeros.</p>'}
+                `;
+            }
+
+            // 3. Render Genre Sections
+            const renderGenreSections = (movieArray, headingText) => {
+                const movieListContainer = document.getElementById('explore-movie-list-container');
+                const headingEl = document.getElementById('explore-heading');
+
+                if (!movieListContainer) return; 
+
+                movieListContainer.innerHTML = ''; // Clear previous content
+                
+                const groupedMovies = groupMoviesByGenre(movieArray);
+                const genreKeys = Object.keys(groupedMovies).sort();
+                
+                // Update the main heading
+                if (headingEl) headingEl.textContent = headingText;
+
+                if (genreKeys.length === 0) {
+                    movieListContainer.innerHTML = `<p class="text-gray-400 text-center col-span-full py-8">No results found.</p>`;
+                    return;
+                }
+
+                genreKeys.forEach(genre => {
+                    const moviesInGenre = groupedMovies[genre];
+                    
+                    const genreSection = document.createElement('section');
+                    genreSection.className = 'mb-10'; // Spacing between genres
+                    genreSection.innerHTML = `
+                        <h3 class="text-2xl font-bold text-sky-400 mb-4">${genre} (${moviesInGenre.length})</h3>
+                        <div class="movie-scroll-container flex space-x-4 overflow-x-auto overflow-y-hidden pb-4">
+                            ${moviesInGenre.map(renderMovieCard).join('')}
+                        </div>
+                    `;
+                    movieListContainer.appendChild(genreSection);
+                });
+
+                // Attach selection listeners for all new cards
+                document.querySelectorAll('.select-movie-btn').forEach(button => {
+                    button.onclick = handleMovieSelection;
+                });
+            };
+            
+            // Initial render of all movies, grouped by genre
+            renderGenreSections(movies, '🎬 All Available Movies (Grouped by Genre)');
+
+            // 4. Render Quotes List
+            const quotesListEl = document.getElementById('quotes-list-container');
+            if (quotesListEl) {
+                 quotesListEl.innerHTML = quotesList.length > 0 ? quotesList.map(q => 
+                            `<blockquote class="border-l-4 border-red-600 pl-4 italic text-gray-300">
+                                "${q.sentence}" 
+                                <footer class="text-sm text-gray-500 mt-1">— ${q.character.name}</footer>
+                            </blockquote>`
+                        ).join('') : '<p class="text-gray-500">Failed to load Game of Thrones quotes list.</p>';
+            }
+
+            
+            // 5. Attach search event listener (This handles the search and filter feature)
+            document.getElementById('movie-search-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const input = document.getElementById('search-input');
+                const filter = document.getElementById('genre-filter'); 
+                
+                const query = input.value.trim();
+                const selectedGenre = filter.value || null;
+
+                if (!query && !selectedGenre) {
+                    // Show all movies if both fields are empty
+                    const allMovies = await fetchMovies(null, null);
+                    renderGenreSections(allMovies, '🎬 All Available Movies (Grouped by Genre)');
+                    return;
+                }
+
+                document.getElementById('explore-heading').textContent = `Searching...`;
+                document.getElementById('explore-movie-list-container').innerHTML = '<p class="text-white text-center col-span-full py-8">Loading results...</p>';
+                
+                const searchResults = await fetchMovies(query, selectedGenre); 
+                
+                const queryText = query ? ` and Query: "${query}"` : '';
+                const genreText = selectedGenre ? `Genre: ${selectedGenre}` : 'All Genres';
+                const headingText = `Results for ${genreText}${queryText}`;
+
+                // Results are filtered and then regrouped by genre before display
+                renderGenreSections(searchResults, headingText);
+            };
+        }
+        
+        /** Renders the main Watch Party interface (updated Admin Panel) */
+        async function renderPartyView(user) {
+            
+            const adminBadge = isAdmin ? '<span class="ml-2 px-3 py-1 bg-yellow-500 text-gray-900 font-bold text-xs rounded-full shadow-md">ADMIN</span>' : '';
+            
+            const partyHTML = `
+                <div class="max-w-7xl mx-auto space-y-10">
+                    
+                    <!-- Top Section: Video Player & Chat -->
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-10">
+                        
+                        <!-- 1. Video Player Area (2/3 width) -->
+                        <div class="lg:col-span-2 bg-gray-900 rounded-2xl shadow-3xl overflow-hidden p-6 relative border border-sky-900/40">
+                            <h2 class="text-2xl font-extrabold text-white mb-4">Current Fun Time Stream</h2>
+                            <div id="player-area" class="relative">
+                                <!-- Player UI is dynamically updated by updatePlayerUI() -->
+                            </div>
+                            
+                            <!-- Admin Panel (Only visible in admin mode, with metrics) -->
+                            ${isAdmin ? `
+                                <div class="mt-6 p-4 bg-yellow-900/50 border border-yellow-500 rounded-xl">
+                                    <h4 class="text-xl font-bold text-yellow-400 flex items-center mb-4">
+                                        <svg class="w-6 h-6 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm-5 8a5 5 0 1110 0 5 5 0 01-10 0zM10 5a5 5 0 00-4.053 7.91l-1.46-1.46A7.965 7.965 0 012 10a8 8 0 0116 0c0 1.956-.704 3.737-1.87 5.127l-1.46-1.46A5.002 5.002 0 0010 5z"></path></svg>
+                                        Administrator Dashboard
+                                    </h4>
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                        <div class="p-3 bg-yellow-800/50 rounded-lg text-center">
+                                            <p class="text-sm text-yellow-200">Total Movies Available</p>
+                                            <p class="text-2xl font-extrabold text-white">${TOTAL_MOCK_MOVIES.toLocaleString()}</p>
+                                        </div>
+                                        <div class="p-3 bg-yellow-800/50 rounded-lg text-center">
+                                            <p class="text-sm text-yellow-200">Total Videos Available</p>
+                                            <p class="text-2xl font-extrabold text-white">${TOTAL_MOCK_VIDEOS.toLocaleString()}</p>
+                                        </div>
+                                        <div class="p-3 bg-yellow-800/50 rounded-lg text-center">
+                                            <p class="text-sm text-yellow-200">Active Users Online</p>
+                                            <p class="text-2xl font-extrabold text-white" id="admin-user-count">${onlineUserCount}</p>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- User List -->
+                                    <h5 class="text-lg font-bold text-yellow-300 mb-2">Active User List</h5>
+                                    <ul id="active-user-list" class="max-h-40 overflow-y-auto space-y-2 p-2 bg-gray-800 rounded-lg">
+                                        <!-- User list rendered by renderAdminUserList() -->
+                                    </ul>
+
+                                    <p class="text-sm text-yellow-300 mt-4">Content Selection: Click 'Select for Party' in the Explore tab to cast content.</p>
+                                </div>
+                            ` : ''}
+
+                            <div class="mt-6 p-4 bg-gray-800 rounded-xl flex justify-between items-center border border-gray-700">
+                                <p class="text-gray-500 text-sm break-all">
+                                    <span class="font-bold text-gray-300">Your Full Session ID:</span> 
+                                    <span class="font-mono text-sky-300">${user.uid}</span>
+                                    ${adminBadge}
+                                </p>
+                                <button id="copy-id-btn" class="ml-4 p-2 bg-gray-700 text-white rounded-full hover:bg-gray-600 transition" title="Copy User ID">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2v-2m-4-2l-4 4m0 0l-4-4m4 4V7"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 2. Chat/User List Area (1/3 width) -->
+                        <div class="lg:col-span-1 flex flex-col bg-gray-900 rounded-2xl shadow-3xl border border-sky-900/40">
+                            <h3 class="text-xl font-bold text-white p-4 border-b border-gray-700">Live Chat</h3>
+                            <div id="chat-messages" class="flex-grow overflow-y-auto p-4 space-y-3 h-64 lg:h-auto min-h-[200px] max-h-[500px] lg:max-h-full">
+                                <!-- Real-time messages will be rendered here -->
+                                <p class="text-gray-500 italic text-center">Loading messages...</p>
+                            </div>
+                            
+                            <!-- Chat Input -->
+                            <form id="chat-form" class="p-4 border-t border-gray-700">
+                                <div class="flex space-x-2">
+                                    <input type="text" id="chat-input" placeholder="Say something..." class="flex-grow p-3 bg-gray-800 text-white rounded-xl border border-gray-700 focus:border-sky-500" required>
+                                    <button type="submit" class="px-4 py-3 bg-sky-600 text-white rounded-xl hover:bg-sky-700 transition duration-300 font-bold shadow-md">Send</button>
+                                </div>
+                            </form>
+                            
+                            <!-- Friends/Online Users (Simulated as online count for now) -->
+                            <h3 class="text-xl font-bold text-white p-4 border-t border-gray-700">Online Users</h3>
+                            <div class="p-4 space-y-2 text-gray-400 flex items-center">
+                                <p><span class="h-3 w-3 rounded-full bg-green-500 mr-2 inline-block"></span>Total Online: <span id="online-users-count-display" class="font-bold text-white">${onlineUserCount}</span></p>
+                                <p class="text-xs ml-auto text-gray-500 italic">Copy ID to share!</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bottom Section: Placeholder Content (unchanged) -->
+                    <div class="bg-gray-900 rounded-2xl shadow-3xl p-6 border border-red-900/40">
+                        <h2 class="text-2xl font-extrabold text-white mb-8">📚 Placeholder Content: A Song of Ice and Fire</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div class="bg-gray-800 p-4 rounded-xl shadow-xl border border-gray-700"><h5 class="text-xl font-bold text-red-400 mb-2">A Game of Thrones</h5><p class="text-sm text-gray-400">Author: G.R.R. Martin</p><p class="text-sm text-gray-500 mt-2 italic">Released: 1996</p></div>
+                            <div class="bg-gray-800 p-4 rounded-xl shadow-xl border border-gray-700"><h5 class="text-xl font-bold text-red-400 mb-2">A Clash of Kings</h5><p class="text-sm text-gray-400">Author: G.R.R. Martin</p><p class="text-sm text-gray-500 mt-2 italic">Released: 1998</p></div>
+                            <div class="bg-gray-800 p-4 rounded-xl shadow-xl border border-gray-700"><h5 class="text-xl font-bold text-red-400 mb-2">A Storm of Swords</h5><p class="text-sm text-gray-400">Author: G.R.R. Martin</p><p class="text-sm text-gray-500 mt-2 italic">Released: 2000</p></div>
+                        </div>
+                    </div>
+
+                </div>
+            `;
+            document.getElementById('content-area').innerHTML = partyHTML;
+            
+            updatePlayerUI();
+            document.getElementById('online-users-count-display').textContent = onlineUserCount;
+            if (isAdmin) {
+                renderAdminUserList(); // Render the full user list for the admin dashboard
+            }
+
+            // Attach Chat submission listener
+            document.getElementById('chat-form').onsubmit = (e) => {
+                e.preventDefault();
+                const input = document.getElementById('chat-input');
+                const message = input.value.trim();
+                if (message) {
+                    sendChatMessage(message);
+                    input.value = '';
+                }
+            };
+            
+            // Attach Copy ID button logic
+            document.getElementById('copy-id-btn').onclick = () => {
+                try {
+                    const tempInput = document.createElement('textarea');
+                    tempInput.value = user.uid;
+                    document.body.appendChild(tempInput);
+                    tempInput.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(tempInput);
+                    showNotification("Your Session ID has been copied! Share it with friends.", false);
+                } catch (err) {
+                    showNotification("Failed to copy ID to clipboard.", true);
+                }
+            };
+        }
+        
+        /** Renders the main view based on the current page state */
+        async function renderWatchPartyView(user) {
+            renderHeaderControls(); // Update header based on current state
+            clearMainContent();
+            
+            const mainContent = document.getElementById('main-content');
+            
+            const navHTML = `
+                <div class="max-w-7xl mx-auto mb-6">
+                    <div class="flex border-b border-gray-700">
+                        ${['party', 'explore', 'history'].map(page => `
+                            <button onclick="setPage('${page}')" class="px-6 py-3 font-semibold text-lg transition-colors duration-200 
+                                ${currentPage === page ? 'text-sky-400 border-b-2 border-sky-400' : 'text-gray-400 hover:text-white'}">
+                                ${page.charAt(0).toUpperCase() + page.slice(1)}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+                <div id="content-area" class="max-w-7xl mx-auto">
+                    <!-- Dynamic content will load here -->
+                </div>
+            `;
+            mainContent.innerHTML = navHTML;
+
+            // Render content based on current page
+            switch (currentPage) {
+                case 'explore':
+                    await renderExploreView();
+                    break;
+                case 'history':
+                    await renderHistoryView();
+                    break;
+                case 'party':
+                default:
+                    await renderPartyView(user);
+                    break;
+            }
+
+            if (db && userId) {
+                // Attach listeners after rendering is complete, especially for the Explore view
+                document.querySelectorAll('.select-movie-btn').forEach(button => {
+                    button.onclick = handleMovieSelection;
+                });
+            }
+        }
+        
+        /** Renders the Login View (Admin form now handled by modal) */
+        function renderLoginView() {
+            renderHeaderControls(); // Ensure header reflects logged out state
+            clearMainContent();
+
+            const loginHTML = `
+                <div class="max-w-4xl mx-auto mt-12">
+                    <h2 class="text-4xl font-extrabold text-white mb-10 text-center">Welcome to <span class="text-sky-400">Fun Time</span>!</h2>
+
+                    <!-- Guest Session Card -->
+                    <div class="bg-gray-900 border border-sky-800/30 p-8 rounded-2xl shadow-3xl flex flex-col justify-between max-w-sm mx-auto">
+                        <div>
+                            <h3 class="text-3xl font-bold text-white mb-4">Guest Access</h3>
+                            <p class="text-gray-400 mb-8">Join the party anonymously with a temporary session ID. No password needed.</p>
+                        </div>
+                        <button id="start-session-btn" class="w-full py-3 bg-sky-600 text-white font-bold rounded-xl shadow-lg hover:bg-sky-700 transition duration-300 flex items-center justify-center space-x-2">
+                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 0C4.477 0 0 4.477 0 10s4.477 10 10 10 10-4.477 10-10S15.523 0 10 0zm0 3.333c1.868 0 3.518.75 4.708 1.954l-1.637 1.637c-.85-.85-1.996-1.391-3.071-1.391-2.617 0-4.83 1.93-5.32 4.54l-1.93-1.64c.73-3.6 3.91-6.09 7.25-6.09zm0 13.334c-1.868 0-3.518-.75-4.708-1.954l1.637-1.637c.85.85 1.996 1.391 3.071 1.391 2.617 0 4.83-1.93 5.32-4.54l1.93 1.64c-.73 3.6-3.91 6.09-7.25 6.09zM10 8.333c-.92 0-1.667.747-1.667 1.667S9.08 11.667 10 11.667s1.667-.747 1.667-1.667-1.667-1.667-1.667-1.667z"></path></svg>
+                            Start Guest Session
+                        </button>
+                        <p class="text-sm text-gray-500 pt-4 text-center">To get Admin access, click 'Admin Login' in the header.</p>
+                    </div>
+                </div>
+            `;
+            document.getElementById('main-content').innerHTML = loginHTML;
+
+            // Attach event listeners for the modal and guest login
+            document.getElementById('start-session-btn').onclick = () => attemptGuestSignIn();
+        }
+        
+        /** Attempts Admin Login with credentials */
+        function attemptAdminLogin() {
+            const username = document.getElementById('admin-username').value;
+            const password = document.getElementById('admin-password').value;
+            
+            document.getElementById('admin-login-modal').classList.add('hidden');
+
+            if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+                if (ADMIN_USERNAME === "shivansh" && ADMIN_PASSWORD === "gtrxgtr") {
+                    isAdmin = true;
+                    localStorage.setItem('watchparty_is_admin', 'true');
+                    showNotification("Admin access granted! Welcome, Shivansh.", false);
+                    
+                    // User is already authenticated (e.g., as guest). Just update the status and re-render.
+                    if (auth && auth.currentUser) {
+                        userId = auth.currentUser.uid;
+                        updateUserPresence(true); // Update presence with new isAdmin flag
+                        renderWatchPartyView(auth.currentUser); // Re-render the view
+                    } else {
+                         // User is not authenticated. Proceed with full guest login, which the onAuthStateChanged listener will catch.
+                         attemptGuestSignIn(true);
+                    }
+                } else {
+                    showNotification("Admin token not set in code.", true);
+                }
+            } else {
+                showNotification("Admin login failed. Invalid username or password.", true);
+            }
+        }
+        
+        /** Attempts Sign In (Guest/Anonymous is default) */
+        async function attemptGuestSignIn() {
+            if (!auth) return;
+            
+            // Clean up old session presence first
+            if (userId) {
+                 await deleteDoc(doc(db, PUBLIC_USERS_PATH, userId));
+            }
+            
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                showNotification("Guest session started successfully!", false);
+            } catch (error) {
+                console.error("Authentication Error:", error);
+                showNotification("Authentication failed. Please try again.", true);
+                renderLoginView(); // Revert to login view on failure
+            }
+        }
+
+        // --- CORE APPLICATION STARTUP ---
+        
+        function handleFirebaseInitError() {
+            clearMainContent();
+            const mainContent = document.getElementById('main-content');
+            mainContent.innerHTML = `
+                <div class="max-w-2xl mx-auto mt-20 p-8 bg-red-900/40 border-2 border-red-600 rounded-xl shadow-2xl text-center">
+                    <h2 class="text-3xl font-extrabold text-red-300 mb-4">🚨 Environment Setup Required</h2>
+                    <p class="text-white text-lg">
+                        This application requires a **Firebase Configuration** to run its collaborative features (chat, sync).
+                    </p>
+                    <p class="text-sm text-red-200 mt-4">
+                        Since you are running this locally, the '__firebase_config' variable is missing, which prevents the live data components from initializing.
+                    </p>
+                    <p class="text-yellow-400 mt-6 font-semibold">
+                        However, the main user interface is now visible. You can still access **Explore** and use the **Admin Login** button to enter the main app and view mock content.
+                    </p>
+                    <button onclick="renderLoginView()" class="mt-4 px-6 py-3 bg-sky-600 text-white font-bold rounded-xl hover:bg-sky-700 transition duration-300">
+                        Proceed to Login Screen
+                    </button>
+                </div>
+            `;
+            renderHeaderControls();
+        }
+
+        async function startApp() {
+            // Check if config is essentially empty (which happens when run locally outside Canvas)
+            if (Object.keys(firebaseConfig).length === 0) {
+                handleFirebaseInitError();
+                return;
+            }
+
+            try {
+                // 1. Initialize Firebase services
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // 2. Set up Auth State Listener
+                onAuthStateChanged(auth, (user) => {
+                    isAdmin = localStorage.getItem('watchparty_is_admin') === 'true';
+
+                    if (user) {
+                        userId = user.uid;
+                        
+                        // Setup Real-time Listeners (only once per auth session)
+                        updateUserPresence(true);
+                        setupUserPresenceListener();
+                        setupChatListener();
+                        
+                        // Render the main view
+                        renderWatchPartyView(user);
+                    } else {
+                        // Signed out state
+                        userId = null;
+                        renderLoginView();
+                    }
+                });
+                
+                // 3. Admin Login Form Handler setup 
+                document.getElementById('admin-login-form').onsubmit = (e) => {
+                    e.preventDefault();
+                    attemptAdminLogin();
+                };
+
+                // 4. Initial sign-in attempt (listener handles the result)
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    // Start anonymously if no token is present, which is typical for a fresh session
+                    await signInAnonymously(auth);
+                }
+
+            } catch (e) {
+                console.error("Critical Application Initialization Failed:", e);
+                // Fallback UI if Firebase fails even with config (e.g., config is malformed)
+                handleFirebaseInitError();
+            }
+        }
+
+
+        // Override the old window.onload logic
+        window.onload = startApp;
+        
+        // Expose functions to the global scope for button onclick attributes
+        window.setPage = setPage;
+        window.togglePlayerSync = togglePlayerSync; 
+        // Expose renderLoginView for the error handler button
+        window.renderLoginView = renderLoginView; 
+
+    </script>
+
+</body>
+</html>
